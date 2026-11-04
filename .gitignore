@@ -1,0 +1,26 @@
+# Android / Gradle
+*.iml
+.gradle/
+local.properties
+.idea/
+.DS_Store
+build/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+output.json
+
+# Kotlin
+.kotlin/
+
+# Signing (see README: CI injects these via repository secrets)
+keystore.properties
+*.jks.local
+
+# Logs
+*.log

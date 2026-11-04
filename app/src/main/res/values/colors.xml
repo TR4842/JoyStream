@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="joy_background">#FF0B0B10</color>
+    <color name="joy_surface">#FF14141C</color>
+    <color name="joy_primary">#FF7C5CFF</color>
+    <color name="joy_accent">#FFFF4D8D</color>
+    <color name="ic_launcher_background">#FF12121A</color>
+</resources>
