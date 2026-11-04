@@ -178,7 +178,8 @@ class MovieBoxProvider(private val client: MovieBoxClient) : MediaProvider {
     // ----------------------------------------------------------------- releases
 
     override suspend fun releases(id: MediaId, season: Int, episode: Int): List<StreamRelease> {
-        val subjectId = id.value
+        val mediaId = id
+        val subjectId = mediaId.value
         val playInfoPath = if (season <= 0 && episode <= 0) {
             "$PLAY_INFO_PATH$subjectId"
         } else {
@@ -311,7 +312,7 @@ class MovieBoxProvider(private val client: MovieBoxClient) : MediaProvider {
 
                     add(
                         StreamRelease(
-                            provider = id,
+                            provider = PROVIDER_ID,
                             title = releaseTitle,
                             url = manifest,
                             kind = kind,
@@ -404,7 +405,7 @@ class MovieBoxProvider(private val client: MovieBoxClient) : MediaProvider {
             ?: resolutionFromLink(url)
 
         return StreamRelease(
-            provider = id,
+            provider = PROVIDER_ID,
             title = item.str("fileName", "title") ?: "MovieBox source",
             url = url,
             kind = StreamKind.PROGRESSIVE,

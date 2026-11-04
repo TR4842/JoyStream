@@ -188,7 +188,7 @@ class DramachiProvider(private val okHttp: OkHttpClient) : MediaProvider {
                 async(Dispatchers.IO) {
                     runCatching { resolveFileStream(fid, disk) }.getOrNull()?.let { (url, fileName) ->
                         StreamRelease(
-                            provider = id,
+                            provider = PROVIDER_ID,
                             title = fileName,
                             url = url,
                             kind = if (url.contains(".m3u8")) StreamKind.HLS else StreamKind.PROGRESSIVE,
