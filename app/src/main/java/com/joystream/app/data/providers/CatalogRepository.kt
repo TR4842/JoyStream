@@ -44,30 +44,22 @@ class CatalogRepository(
 
     suspend fun homeFeed(): HomeFeed = coroutineScope {
         val providers = enabled().filter { it.supportsHomeFeed }
-        val results = providers.map { provider ->
-            async {
-                runCatching { provider.homeFeed() }
-                    .fold(
-                        onSuccess = { rows -> provider.displayName to rows },
-                        onFailure = { error -> null to listOf(error to provider.displayName) },
-                    )
-            }
+        val outcomes = providers.map { provider ->
+            async { provider to runCatching { provider.homeFeed() } }
         }.map { it.await() }
 
         val rows = mutableListOf<HomeRow>()
         val errors = mutableListOf<String>()
         val seen = mutableSetOf<String>()
 
-        for ((providerName, value) in results) {
-            if (providerName != null) {
-                value.filterIsInstance<HomeRow>().forEach { row ->
-                    val items = row.items.filter { seen.add(it.key) }
-                    if (items.isNotEmpty()) rows += row.copy(items = items)
+        outcomes.forEach { (provider, result) ->
+            result.onSuccess { providerRows ->
+                providerRows.forEach { row ->
+                    val fresh = row.items.filter { seen.add(it.key) }
+                    if (fresh.isNotEmpty()) rows += row.copy(items = fresh)
                 }
-            } else {
-                value.filterIsInstance<Pair<Throwable, String>>().forEach { (error, name) ->
-                    errors += "$name: ${error.message ?: "unavailable"}"
-                }
+            }.onFailure { error ->
+                errors += "${provider.displayName}: ${error.message ?: "unavailable"}"
             }
         }
 
