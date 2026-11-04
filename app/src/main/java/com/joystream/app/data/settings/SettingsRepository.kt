@@ -14,6 +14,8 @@ data class Settings(
     val notifyUpstreamChanges: Boolean = true,
     val wifiOnlyDownloads: Boolean = false,
     val liveTvUrl: String = "",
+    /** Optional MovieBox API base override, e.g. "https://api6.aoneroom.com". */
+    val customApiHost: String = "",
     val lastUpdateCheck: Long = 0L,
     val onboardingDone: Boolean = false,
 ) {
@@ -51,6 +53,7 @@ class SettingsRepository(context: Context) {
             notifyUpstreamChanges = prefs.getBoolean(KEY_UPSTREAM_NOTIFY, true),
             wifiOnlyDownloads = prefs.getBoolean(KEY_WIFI_ONLY, false),
             liveTvUrl = prefs.getString(KEY_LIVE_TV, "") ?: "",
+            customApiHost = prefs.getString(KEY_API_HOST, "") ?: "",
             lastUpdateCheck = prefs.getLong(KEY_LAST_CHECK, 0L),
             onboardingDone = prefs.getBoolean(KEY_ONBOARDING, false),
         )
@@ -66,6 +69,7 @@ class SettingsRepository(context: Context) {
             .putBoolean(KEY_UPSTREAM_NOTIFY, next.notifyUpstreamChanges)
             .putBoolean(KEY_WIFI_ONLY, next.wifiOnlyDownloads)
             .putString(KEY_LIVE_TV, next.liveTvUrl)
+            .putString(KEY_API_HOST, next.customApiHost)
             .putLong(KEY_LAST_CHECK, next.lastUpdateCheck)
             .putBoolean(KEY_ONBOARDING, next.onboardingDone)
             .apply()
@@ -79,6 +83,10 @@ class SettingsRepository(context: Context) {
     }
 
     fun setLiveTvUrl(url: String) = update { it.copy(liveTvUrl = url.trim()) }
+
+    fun setCustomApiHost(host: String) = update {
+        it.copy(customApiHost = host.trim().trimEnd('/'))
+    }
 
     fun setQuality(quality: String) = update { it.copy(preferredQuality = quality) }
 
@@ -94,6 +102,7 @@ class SettingsRepository(context: Context) {
         const val KEY_UPSTREAM_NOTIFY = "upstream_notify"
         const val KEY_WIFI_ONLY = "wifi_only"
         const val KEY_LIVE_TV = "live_tv_url"
+        const val KEY_API_HOST = "custom_api_host"
         const val KEY_LAST_CHECK = "last_update_check"
         const val KEY_ONBOARDING = "onboarding_done"
     }

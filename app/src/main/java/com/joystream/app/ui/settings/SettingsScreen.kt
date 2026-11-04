@@ -73,6 +73,7 @@ fun SettingsScreen(container: AppContainer) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     var liveTvDraft by remember(settings.liveTvUrl) { mutableStateOf(settings.liveTvUrl) }
+    var apiHostDraft by remember(settings.customApiHost) { mutableStateOf(settings.customApiHost) }
     var probeRunning by remember { mutableStateOf(false) }
     var probeResults by remember { mutableStateOf<List<MediaProvider.HostCheck>?>(null) }
     var probeError by remember { mutableStateOf<String?>(null) }
@@ -365,6 +366,37 @@ fun SettingsScreen(container: AppContainer) {
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.error,
                             )
+                        }
+                    }
+
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = apiHostDraft,
+                        onValueChange = { apiHostDraft = it },
+                        label = { Text("Custom API host (optional)") },
+                        placeholder = { Text("https://api6.aoneroom.com") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Text(
+                        text = "Only needed when your network blocks the built-in mirrors. " +
+                            "Leave empty to use them automatically.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = JoyMuted,
+                    )
+
+                    Spacer(Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = { container.settings.setCustomApiHost(apiHostDraft) },
+                        ) { Text("Save host") }
+                        if (settings.customApiHost.isNotBlank()) {
+                            OutlinedButton(
+                                onClick = {
+                                    apiHostDraft = ""
+                                    container.settings.setCustomApiHost("")
+                                },
+                            ) { Text("Reset") }
                         }
                     }
 

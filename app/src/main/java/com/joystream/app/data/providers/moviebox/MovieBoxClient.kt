@@ -24,7 +24,16 @@ import java.io.IOException
 class MovieBoxClient(
     private val okHttp: OkHttpClient,
     private val sessionStore: MovieBoxSessionStore,
+    /** Optional user supplied base URL, tried before the built-in mirrors. */
+    private val hostOverride: () -> String? = { null },
 ) {
+
+    /** Mirror list for this request: the user override first, then built-ins. */
+    private fun hosts(): List<String> {
+        val override = hostOverride()?.trim()?.trimEnd('/')
+        if (override.isNullOrBlank() || !override.startsWith("http")) return HOSTS
+        return listOf(override) + HOSTS.filterNot { it.equals(override, ignoreCase = true) }
+    }
 
     private val identity = MovieBoxCrypto.generateClientIdentity()
     val userAgent: String get() = identity.userAgent
@@ -88,13 +97,14 @@ class MovieBoxClient(
         var lastStatus: Int? = null
         val tried = mutableListOf<String>()
 
-        for (attempt in HOSTS.indices) {
+        val hosts = hosts()
+        for (attempt in hosts.indices) {
             if (attempt > 0) {
                 delay(backoffMs)
                 backoffMs = 50L
             }
-            val index = (startIndex + attempt) % HOSTS.size
-            val url = HOSTS[index] + pathAndQuery
+            val index = (startIndex + attempt) % hosts.size
+            val url = hosts[index] + pathAndQuery
 
             val headers = MovieBoxCrypto.signedHeaders(
                 method = method,
@@ -123,8 +133,8 @@ class MovieBoxClient(
                         // answers 5xx, so the next host is always worth trying.
                         lastStatus = response.code
                         lastError = "HTTP ${response.code}"
-                        tried += "${HOSTS[index].substringAfter("//")} → ${response.code}"
-                        activeHostIndex = (index + 1) % HOSTS.size
+                        tried += "${hosts[index].substringAfter("//")} → ${response.code}"
+                        activeHostIndex = (index + 1) % hosts.size
                         if (response.code == 429) {
                             backoffMs = (response.header("Retry-After")?.toLongOrNull() ?: 0L)
                                 .coerceAtMost(3L) * 1000L
@@ -146,8 +156,8 @@ class MovieBoxClient(
                 }
             } catch (io: IOException) {
                 lastError = io.message
-                tried += "${HOSTS[index].substringAfter("//")} → ${io.javaClass.simpleName}"
-                activeHostIndex = (index + 1) % HOSTS.size
+                tried += "${hosts[index].substringAfter("//")} → ${io.javaClass.simpleName}"
+                activeHostIndex = (index + 1) % hosts.size
             }
         }
 
@@ -176,7 +186,7 @@ class MovieBoxClient(
      * "the provider moved its API".
      */
     suspend fun probeHosts(): List<HostProbe> = withContext(Dispatchers.IO) {
-        HOSTS.map { host ->
+        hosts().map { host ->
             val url = host + VISITOR_LOGIN
             val result = runCatching {
                 val headers = MovieBoxCrypto.signedHeaders(

@@ -28,7 +28,11 @@ class AppContainer(context: Context) {
     val updateController = UpdateController(updates, settings)
 
     private val sessionStore = MovieBoxSessionStore(appContext)
-    private val movieBoxClient = MovieBoxClient(Http.client, sessionStore)
+    private val movieBoxClient = MovieBoxClient(
+        okHttp = Http.client,
+        sessionStore = sessionStore,
+        hostOverride = { settings.current.customApiHost },
+    )
 
     val movieBox: MovieBoxProvider = MovieBoxProvider(movieBoxClient)
 
