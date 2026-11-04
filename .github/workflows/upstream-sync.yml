@@ -156,6 +156,7 @@ jobs:
           VERSION="${{ steps.bump.outputs.version }}"
           SHA="${{ steps.upstream.outputs.sha }}"
           SHORT=$(echo "$SHA" | cut -c1-7)
+          PREV="${{ steps.upstream.outputs.previous }}"
           {
             echo "Automated rebuild for upstream \`${UPSTREAM_REPO}\` @ \`${SHORT}\`."
             echo
@@ -170,7 +171,7 @@ jobs:
             echo "### Notes"
             echo
             echo "- Install the \`joystream-${VERSION}.apk\` asset (same signing key as previous builds, so it updates in place)."
-            echo "- Compare: https://github.com/${UPSTREAM_REPO}/compare/\${{ steps.upstream.outputs.previous }}...${SHA}"
+            echo "- Compare: https://github.com/${UPSTREAM_REPO}/compare/${PREV:-main}...${SHA}"
           } > release-notes.md
           cat release-notes.md
 
@@ -182,7 +183,7 @@ jobs:
           git config user.name "joystream-bot"
           git config user.email "joystream-bot@users.noreply.github.com"
           git add version.properties UPSTREAM_CHANGELOG.md
-          git commit -m "chore: rebuild for upstream $(echo '${{ steps.upstream.outputs.sha }}' | cut -c1-7) (v${VERSION})"
+          git commit -m "chore: rebuild for upstream ${{ steps.upstream.outputs.sha }} (v${VERSION})"
           git tag "v${VERSION}"
           git push origin main
           git push origin "v${VERSION}"
@@ -192,8 +193,8 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="${{ steps.bump.outputs.version }}"
+          SHORT_SHA=$(echo "${{ steps.upstream.outputs.sha }}" | cut -c1-7)
           gh release create "v${VERSION}" \
-            --title "JoyStream v${VERSION} · upstream $(echo '${{ steps.upstream.outputs.sha }}' | cut -c1-7)" \
+            --title "JoyStream v${VERSION} · upstream ${SHORT_SHA}" \
             --notes-file release-notes.md \
-            --target main \
             artifacts/*.apk

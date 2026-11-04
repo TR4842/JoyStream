@@ -6,6 +6,11 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "Create a GitHub release with the built APKs"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -104,12 +109,60 @@ jobs:
           cp app/build/outputs/apk/debug/app-debug.apk "artifacts/joystream-${VERSION}-debug.apk"
           ls -lh artifacts
 
+      - name: Verify APK
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          APK=app/build/outputs/apk/release/app-release.apk
+          BUILD_VERSION=$(grep '^versionName=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          BADGING=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 2>/dev/null | tail -1 || true)
+          SIGNABLE=$(ls "$ANDROID_HOME"/build-tools/*/apksigner 2>/dev/null | tail -1 || true)
+          {
+            echo "**APK verification** (expected version ${BUILD_VERSION})"
+            echo
+            echo '```'
+            sha256sum "$APK"
+            if [ -n "$BADGING" ]; then "$BADGING" dump badging "$APK" | head -4; fi
+            if [ -n "$SIGNABLE" ]; then "$SIGNABLE" verify --print-certs "$APK" | head -6; fi
+            echo '```'
+          } > verify.md
+          cat verify.md
+          jq -Rs '{body: .}' verify.md > payload.json
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/comments" --input payload.json || true
+
       - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
         with:
           name: joystream-apks
           path: artifacts/*.apk
           retention-days: 30
+
+      - name: Publish manual release
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION=$(grep '^versionName=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          {
+            echo "Native Android client for MovieBox-Tui."
+            echo
+            echo "- Stream movies, series and live TV"
+            echo "- Resumable offline downloads"
+            echo "- Self-updating in app (this release is the update feed)"
+            echo
+            echo "Install \`joystream-${VERSION}.apk\` and allow installs from unknown sources."
+          } > notes.md
+          if gh release view "v${VERSION}" >/dev/null 2>&1; then
+            gh release upload "v${VERSION}" artifacts/*.apk --clobber
+          else
+            gh release create "v${VERSION}" \
+              --title "JoyStream v${VERSION}" \
+              --notes-file notes.md \
+              artifacts/*.apk
+          fi
 
       - name: Attach APKs to tagged release
         if: startsWith(github.ref, 'refs/tags/v')
