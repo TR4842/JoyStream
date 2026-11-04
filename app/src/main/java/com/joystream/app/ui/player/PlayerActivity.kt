@@ -63,6 +63,8 @@ import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.joystream.app.JoyStreamApp
+import com.joystream.app.data.model.CatalogItem
+import com.joystream.app.data.model.MediaType
 import com.joystream.app.data.model.PlaybackRequest
 import com.joystream.app.data.model.StreamKind
 import com.joystream.app.ui.theme.JoyStreamTheme
@@ -197,7 +199,7 @@ class PlayerActivity : ComponentActivity() {
         }
 
         exoPlayer.setMediaSource(mediaSource)
-        exoPlayer.repeatMode = if (request.isLive) Player.REPEAT_MODE_OFF else Player.REPEAT_MODE_OFF
+        exoPlayer.repeatMode = Player.REPEAT_MODE_OFF
         return exoPlayer
     }
 
@@ -223,10 +225,17 @@ class PlayerActivity : ComponentActivity() {
 
         val idValue = request.idValue ?: return
         val provider = request.provider ?: return
+        val catalogItem = CatalogItem(
+            provider = provider,
+            idValue = idValue,
+            title = request.title,
+            mediaType = if ((request.episode ?: 0) > 0) MediaType.SERIES else MediaType.MOVIE,
+            posterUrl = request.posterUrl,
+        )
         scope.launch(Dispatchers.IO) {
             app.container.libraryStore.recordPlayback(
                 details = null,
-                item = null,
+                item = catalogItem,
                 provider = provider,
                 idValue = idValue,
                 positionMs = position,

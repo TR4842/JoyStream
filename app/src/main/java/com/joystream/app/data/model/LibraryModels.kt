@@ -17,6 +17,16 @@ data class FavoriteItem(
     val id: MediaId get() = MediaId(provider, idValue)
 }
 
+/** Per-episode resume state, keyed by "s01e02" inside a HistoryItem. */
+@Serializable
+data class EpisodeProgress(
+    val positionMs: Long = 0L,
+    val durationMs: Long = 0L,
+) {
+    val fraction: Float
+        get() = if (durationMs > 0) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f
+}
+
 /** A continue-watching entry. */
 @Serializable
 data class HistoryItem(
@@ -34,6 +44,8 @@ data class HistoryItem(
     val updatedAt: Long = System.currentTimeMillis(),
     /** Local file for downloaded items, so playback works offline. */
     val localPath: String? = null,
+    /** Per-episode positions, e.g. {"s01e02": EpisodeProgress(...)}. */
+    val episodeProgress: Map<String, EpisodeProgress> = emptyMap(),
 ) {
     val id: MediaId get() = MediaId(provider, idValue)
 

@@ -318,7 +318,9 @@ class DetailsViewModel(
         return if (episode == null) base else "$base:s${episode.season}e${episode.number}"
     }
 
-    fun historyFor(key: String): HistoryItem? = _state.value.history.firstOrNull { it.key == key }
+    /** Resume fraction (0..1) for an episode, from the per-episode resume store. */
+    fun episodeProgress(episode: Episode): Float =
+        library.progressFraction(episodeKey(episode))
 
     private fun qualityLimit(release: StreamRelease): Int? {
         val preferred = settings.current.preferredQuality.toIntOrNull()
@@ -518,11 +520,9 @@ fun DetailsScreen(
                     val currentSeason = state.season
                     if (currentSeason != null) {
                         items(currentSeason.episodes, key = { "ep-${it.season}-${it.number}" }) { ep ->
-                            val resumeKey = viewModel.episodeKey(ep)
-                            val history = viewModel.historyFor(resumeKey)
                             EpisodeRow(
                                 episode = ep,
-                                progress = history?.progress ?: 0f,
+                                progress = viewModel.episodeProgress(ep),
                                 onPlay = { viewModel.requestQuality(ep) },
                                 onDownload = { viewModel.requestQuality(ep) },
                             )

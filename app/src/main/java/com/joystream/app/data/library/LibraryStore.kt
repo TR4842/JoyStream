@@ -3,6 +3,7 @@ package com.joystream.app.data.library
 import android.content.Context
 import com.joystream.app.data.model.CatalogItem
 import com.joystream.app.data.model.DownloadItem
+import com.joystream.app.data.model.EpisodeProgress
 import com.joystream.app.data.model.DownloadStatus
 import com.joystream.app.data.model.FavoriteItem
 import com.joystream.app.data.model.HistoryItem
@@ -106,6 +107,20 @@ class LibraryStore(context: Context) {
     ) = mutate { snapshot ->
         val key = MediaId(provider, idValue).key
         val existing = snapshot.history.firstOrNull { it.key == key }
+        val episodeTag = episodeTag(season, episode)
+        val episodeProgress = if (episodeTag != null) {
+            existing?.episodeProgress.orEmpty() + (
+                episodeTag to EpisodeProgress(
+                    positionMs = positionMs,
+                    durationMs = durationMs.takeIf { it > 0 }
+                        ?: existing?.episodeProgress?.get(episodeTag)?.durationMs
+                        ?: 0L,
+                )
+                )
+        } else {
+            existing?.episodeProgress.orEmpty()
+        }
+
         val updated = HistoryItem(
             key = key,
             provider = provider,
@@ -120,21 +135,53 @@ class LibraryStore(context: Context) {
             positionMs = positionMs,
             durationMs = if (durationMs > 0) durationMs else existing?.durationMs ?: 0L,
             localPath = localPath ?: existing?.localPath,
+            episodeProgress = episodeProgress,
             updatedAt = System.currentTimeMillis(),
         )
         val remaining = snapshot.history.filterNot { it.key == key }
         snapshot.copy(history = (listOf(updated) + remaining).take(60))
     }
 
+    /**
+     * Resume position for a library key. Keys can be title scoped
+     * ("moviebox:123") or episode scoped ("moviebox:123:s01e02").
+     */
+    fun resumePosition(key: String): Long {
+        val parsed = parseKey(key) ?: return 0L
+        val entry = _snapshot.value.history.firstOrNull { it.key == parsed.first } ?: return 0L
+        if (parsed.second != null) {
+            return entry.episodeProgress[parsed.second]?.positionMs ?: 0L
+        }
+        return if (entry.progress in 0.02f..0.95f) entry.positionMs else 0L
+    }
+
+    /** Progress fraction (0..1) for an episode-scoped or title-scoped key. */
+    fun progressFraction(key: String): Float {
+        val parsed = parseKey(key) ?: return 0f
+        val entry = _snapshot.value.history.firstOrNull { it.key == parsed.first } ?: return 0f
+        if (parsed.second != null) {
+            return entry.episodeProgress[parsed.second]?.fraction ?: 0f
+        }
+        return entry.progress
+    }
+
+    private fun parseKey(key: String): Pair<String, String?>? {
+        if (key.isBlank()) return null
+        val match = EPISODE_KEY.find(key) ?: return key to null
+        val base = match.groupValues[1]
+        val tag = "s${match.groupValues[2].padStart(2, '0')}e${match.groupValues[3].padStart(2, '0')}"
+        return base to tag
+    }
+
+    private fun episodeTag(season: Int?, episode: Int?): String? {
+        if (episode == null || episode <= 0) return null
+        return "s${(season ?: 0).toString().padStart(2, '0')}e${episode.toString().padStart(2, '0')}"
+    }
+
     suspend fun clearHistory() = mutate { it.copy(history = emptyList()) }
 
     suspend fun removeHistory(key: String) = mutate { snapshot ->
         snapshot.copy(history = snapshot.history.filterNot { it.key == key })
-    }
-
-    fun resumePosition(key: String): Long {
-        val entry = _snapshot.value.history.firstOrNull { it.key == key } ?: return 0L
-        return if (entry.progress in 0.02f..0.95f) entry.positionMs else 0L
     }
 
     // ------------------------------------------------------------- search terms
@@ -180,5 +227,10 @@ class LibraryStore(context: Context) {
                 if (it.statusEnum == from) it.copy(status = to.name) else it
             },
         )
+    }
+
+    private companion object {
+        /** Matches the ":s01e02" suffix of episode-scoped keys. */
+        val EPISODE_KEY = Regex("^(.*):s(\\d{1,3})e(\\d{1,4})$")
     }
 }
