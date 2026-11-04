@@ -1,0 +1,71 @@
+name: Sync main
+
+# The app is developed on the `arena/879807e4-joystream` delivery branch, but
+# GitHub only registers `schedule` triggers (the upstream poll in
+# upstream-sync.yml) from the default branch, and the README points users at
+# `main`. This workflow keeps `main` a mirror of the delivery branch.
+#
+# Pushes made with the default GITHUB_TOKEN do not trigger further workflows, so
+# this cannot loop with itself or with upstream-sync.yml.
+
+on:
+  push:
+    branches:
+      - arena/879807e4-joystream
+    paths-ignore:
+      - '**/*.md'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-main
+  cancel-in-progress: false
+
+env:
+  DELIVERY_BRANCH: arena/879807e4-joystream
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Merge delivery branch into main
+        run: |
+          set -euo pipefail
+          git config user.name "JoyStream Sync"
+          git config user.email "sync@users.noreply.github.com"
+          git fetch origin main "$DELIVERY_BRANCH"
+          git checkout -B main origin/main
+
+          # Auto-maintained files are owned by upstream-sync.yml once main has
+          # been bumped, so keep main's side of any conflict on those.
+          AUTO_FILES="version.properties UPSTREAM_CHANGELOG.md"
+
+          if git merge --no-ff --no-commit "origin/$DELIVERY_BRANCH"; then
+            echo "clean merge"
+          else
+            for f in $AUTO_FILES; do
+              git checkout --ours -- "$f" 2>/dev/null || true
+              git add -- "$f" 2>/dev/null || true
+            done
+            UNRESOLVED=$(git diff --name-only --diff-filter=U || true)
+            if [ -n "$UNRESOLVED" ]; then
+              echo "Unresolved conflicts, cannot mirror:" >&2
+              echo "$UNRESOLVED" >&2
+              exit 1
+            fi
+          fi
+
+          if git diff --cached --quiet && git diff --quiet; then
+            echo "main already matches $DELIVERY_BRANCH"
+            exit 0
+          fi
+
+          git commit -m "chore: mirror $DELIVERY_BRANCH into main"
+          git push origin main
+          echo "main updated to $(git rev-parse --short HEAD)"

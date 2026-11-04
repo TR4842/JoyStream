@@ -11,6 +11,11 @@ on:
   workflow_dispatch:
   repository_dispatch:
     types: [upstream-updated]
+  # sync-main.yml mirrors the delivery branch into main; re-check right after,
+  # so a mirror that lands before the next cron slot still publishes promptly.
+  workflow_run:
+    workflows: [Sync main]
+    types: [completed]
 
 permissions:
   contents: write
@@ -34,6 +39,7 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Resolve upstream head
         id: upstream
@@ -184,6 +190,11 @@ jobs:
           git config user.email "joystream-bot@users.noreply.github.com"
           git add version.properties UPSTREAM_CHANGELOG.md
           git commit -m "chore: rebuild for upstream ${{ steps.upstream.outputs.sha }} (v${VERSION})"
+          LATEST_TAG=$(git tag --list 'v*' --sort=-v:refname | head -1 || true)
+          if [ "$LATEST_TAG" = "v${VERSION}" ]; then
+            echo "v${VERSION} already exists; nothing new to tag" >&2
+            exit 1
+          fi
           git tag "v${VERSION}"
           git push origin main
           git push origin "v${VERSION}"
@@ -194,6 +205,11 @@ jobs:
           set -euo pipefail
           VERSION="${{ steps.bump.outputs.version }}"
           SHORT_SHA=$(echo "${{ steps.upstream.outputs.sha }}" | cut -c1-7)
+          if gh release view "v${VERSION}" >/dev/null 2>&1; then
+            gh release upload "v${VERSION}" artifacts/*.apk --clobber
+            echo "Updated existing release v${VERSION}"
+            exit 0
+          fi
           gh release create "v${VERSION}" \
             --title "JoyStream v${VERSION} · upstream ${SHORT_SHA}" \
             --notes-file release-notes.md \
