@@ -191,3 +191,27 @@ JoyStream hosts nothing. It resolves publicly available stream URLs, the same
 way a browser would, and stores only your local library. Respect the laws and
 rights-holder agreements that apply to you. Upstream MovieBox-Tui is dual
 licensed MIT / Apache-2.0; this client follows the same terms.
+
+## Releases & the update chain
+
+| Release | Contents |
+| --- | --- |
+| `v1.0.0` | First public APK (provider engine ported from upstream `b89065d`) |
+| `v1.0.1` | Per-episode resume positions, real titles in history, upstream baseline recorded in `UPSTREAM_CHANGELOG.md` |
+
+The in-app updater reads `releases/latest` of this repository, so every release
+published here becomes an update offered to installed devices. Releases are
+created by CI only — never upload an APK signed with a different key, or the
+in-place update will fail with a signature mismatch.
+
+### How upstream propagation works
+
+1. `upstream-sync.yml` polls `mesamirh/MovieBox-Tui` every 6 hours.
+2. When the head SHA differs from `version.properties`, it runs
+   `tools/bump_version.py`, which increments `versionCode`, bumps the patch
+   `versionName`, records the new SHA/date and appends to
+   `UPSTREAM_CHANGELOG.md`.
+3. The workflow pushes to `main`, then builds, tags `v<versionName>` and creates
+   a release with the APKs attached.
+4. Installed apps see the new release on their next update check (startup, or
+   Settings → Check for updates) and can download/install it in place.
