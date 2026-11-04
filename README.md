@@ -21,7 +21,7 @@ upstream repo**.
 | **Distribution** | GitHub Releases APK, self-updating in app |
 
 **Install the current build:**
-[`joystream-1.0.1.apk`](https://github.com/TR4842/JoyStream/releases/latest) —
+[`joystream-1.0.2.apk`](https://github.com/TR4842/JoyStream/releases/latest) —
 signed release APK, ~15 MB. Allow installs from unknown sources when prompted;
 the in-app updater uses the same signature, so future versions install in place.
 
@@ -48,6 +48,10 @@ the in-app updater uses the same signature, so future versions install in place.
   channels are cached, grouped and searchable.
 - **Self-updating** — in-app update checks against GitHub Releases with a real
   `PackageInstaller` session (no browser hop). See below.
+- **Mirror failover + diagnostics** — every MovieBox request walks the mirror
+  list (a blocked or dead host usually answers 404/403 rather than timing out).
+  *Settings → Test connection* shows what each mirror returned, and an optional
+  custom API host covers networks that block all the built-in ones.
 - **Zero telemetry** — library, history and settings never leave the device.
 
 ## How the auto-update chain works
@@ -203,6 +207,7 @@ licensed MIT / Apache-2.0; this client follows the same terms.
 | --- | --- |
 | `v1.0.0` | First public APK (provider engine ported from upstream `b89065d`) |
 | `v1.0.1` | Per-episode resume positions, real titles in history, upstream baseline recorded in `UPSTREAM_CHANGELOG.md` |
+| `v1.0.2` | MovieBox mirror failover on every HTTP error, in-app connection test, optional custom API host, clearer empty states |
 
 The in-app updater reads `releases/latest` of this repository, so every release
 published here becomes an update offered to installed devices. Releases are
