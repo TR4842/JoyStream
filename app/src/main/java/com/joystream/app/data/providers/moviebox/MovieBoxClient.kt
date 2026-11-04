@@ -85,6 +85,8 @@ class MovieBoxClient(
         val startIndex = activeHostIndex
         var backoffMs = 50L
         var lastError: String? = null
+        var lastStatus: Int? = null
+        val tried = mutableListOf<String>()
 
         for (attempt in HOSTS.indices) {
             if (attempt > 0) {
@@ -116,8 +118,12 @@ class MovieBoxClient(
                 okHttp.newCall(request).execute().use { response ->
                     absorbSessionHeader(response.header("x-user"))
 
-                    if (response.code in RETRY_STATUS_CODES) {
+                    if (!response.isSuccessful) {
+                        // A dead or blocked mirror answers 404/403 as often as it
+                        // answers 5xx, so the next host is always worth trying.
+                        lastStatus = response.code
                         lastError = "HTTP ${response.code}"
+                        tried += "${HOSTS[index].substringAfter("//")} → ${response.code}"
                         activeHostIndex = (index + 1) % HOSTS.size
                         if (response.code == 429) {
                             backoffMs = (response.header("Retry-After")?.toLongOrNull() ?: 0L)
@@ -125,13 +131,6 @@ class MovieBoxClient(
                             if (backoffMs <= 0L) backoffMs = 400L
                         }
                         return@use
-                    }
-
-                    if (!response.isSuccessful) {
-                        throw ProviderException(
-                            "MovieBox responded with HTTP ${response.code}",
-                            statusCode = response.code,
-                        )
                     }
 
                     val text = response.body?.string().orEmpty()
@@ -147,13 +146,79 @@ class MovieBoxClient(
                 }
             } catch (io: IOException) {
                 lastError = io.message
+                tried += "${HOSTS[index].substringAfter("//")} → ${io.javaClass.simpleName}"
                 activeHostIndex = (index + 1) % HOSTS.size
             }
         }
 
+        lastDiagnostics = tried.joinToString(", ")
         throw ProviderException(
-            "MovieBox is unreachable right now" + (lastError?.let { " ($it)" } ?: ""),
+            "No MovieBox mirror answered" +
+                (lastError?.let { " (last error: $it)" } ?: "") +
+                if (lastStatus == NOT_FOUND) {
+                    " — the catalog endpoint is missing on every mirror, " +
+                        "the service probably changed its API"
+                } else {
+                    ""
+                },
+            statusCode = lastStatus,
         )
+    }
+
+    /** Human readable per-host outcome of the most recent broadcast attempt. */
+    @Volatile
+    var lastDiagnostics: String = ""
+        private set
+
+    /**
+     * Tries `visitor-login` against every mirror and reports what each one said.
+     * Exposed in Settings so a user can tell "no internet" apart from
+     * "the provider moved its API".
+     */
+    suspend fun probeHosts(): List<HostProbe> = withContext(Dispatchers.IO) {
+        HOSTS.map { host ->
+            val url = host + VISITOR_LOGIN
+            val result = runCatching {
+                val headers = MovieBoxCrypto.signedHeaders(
+                    method = "POST",
+                    url = url,
+                    body = "{}",
+                    token = null,
+                    userAgent = identity.userAgent,
+                    clientInfo = identity.clientInfo,
+                    spoofedIp = identity.spoofedIp,
+                )
+                val request = Request.Builder()
+                    .url(url)
+                    .apply { headers.forEach { (key, value) -> header(key, value) } }
+                    .post("{}".toRequestBody(jsonMediaType))
+                    .build()
+                okHttp.newCall(request).execute().use { response ->
+                    response.close()
+                    response.code
+                }
+            }
+            HostProbe(
+                host = host.substringAfter("//"),
+                statusCode = result.getOrNull(),
+                error = result.exceptionOrNull()?.javaClass?.simpleName,
+            )
+        }
+    }
+
+    /** Result of a single mirror health check. */
+    data class HostProbe(
+        val host: String,
+        val statusCode: Int?,
+        val error: String? = null,
+    ) {
+        val ok: Boolean get() = statusCode in 200..299
+        val summary: String
+            get() = when {
+                ok -> "OK"
+                statusCode != null -> "HTTP $statusCode"
+                else -> error ?: "unreachable"
+            }
     }
 
     /** Some responses rotate the visitor token through the `x-user` header. */
@@ -179,6 +244,6 @@ class MovieBoxClient(
 
         private const val VISITOR_LOGIN = "/wefeed-mobile-bff/user-api/visitor-login"
 
-        private val RETRY_STATUS_CODES = setOf(403, 406, 407, 429, 500, 502, 503, 504)
+        private const val NOT_FOUND = 404
     }
 }

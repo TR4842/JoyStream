@@ -88,6 +88,7 @@ data class HomeUiState(
     val continueWatching: List<HistoryItem> = emptyList(),
     val favorites: List<FavoriteItem> = emptyList(),
     val errors: List<String> = emptyList(),
+    val enabledProviderCount: Int = 0,
 )
 
 class HomeViewModel(
@@ -126,6 +127,7 @@ class HomeViewModel(
                     refreshing = false,
                     rows = feed.rows.ifEmpty { it.rows },
                     errors = feed.errors,
+                    enabledProviderCount = catalog.enabled().size,
                 )
             }
         }
@@ -248,10 +250,24 @@ fun HomeScreen(
         if (state.loading) {
             item { LoadingState("Loading your catalog…") }
         } else if (state.rows.isEmpty()) {
+            val enabled = state.enabledProviderCount
+            val failure = state.errors.firstOrNull()
             item {
                 EmptyState(
-                    title = "Nothing to show yet",
-                    message = "Enable a provider in Settings, or check your connection and pull to refresh.",
+                    title = when {
+                        enabled == 0 -> "No provider enabled"
+                        failure != null -> "The catalog is unreachable"
+                        else -> "Nothing to show yet"
+                    },
+                    message = when {
+                        enabled == 0 ->
+                            "Turn on a provider in Settings to start browsing."
+                        failure != null ->
+                            "$failure\n\nRun \"Test connection\" in Settings to see which mirrors answer. " +
+                                "If none of them do, the provider moved its API and the next app update will " +
+                                "carry the fix."
+                        else -> "Pull down to refresh."
+                    },
                 )
             }
         }

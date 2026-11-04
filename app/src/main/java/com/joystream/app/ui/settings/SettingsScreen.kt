@@ -26,6 +26,7 @@ import androidx.compose.material.icons.rounded.CloudDownload
 import androidx.compose.material.icons.rounded.OpenInNew
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SystemUpdate
+import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -55,6 +56,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.joystream.app.BuildConfig
 import com.joystream.app.core.AppContainer
+import com.joystream.app.data.providers.MediaProvider
 import com.joystream.app.data.settings.Settings
 import com.joystream.app.data.update.InstallResult
 import com.joystream.app.ui.theme.JoyGreen
@@ -71,6 +73,9 @@ fun SettingsScreen(container: AppContainer) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     var liveTvDraft by remember(settings.liveTvUrl) { mutableStateOf(settings.liveTvUrl) }
+    var probeRunning by remember { mutableStateOf(false) }
+    var probeResults by remember { mutableStateOf<List<MediaProvider.HostCheck>?>(null) }
+    var probeError by remember { mutableStateOf<String?>(null) }
 
     LazyColumn(
         modifier = Modifier
@@ -297,6 +302,97 @@ fun SettingsScreen(container: AppContainer) {
                     checked = settings.isProviderEnabled(provider.id),
                     onCheckedChange = { container.settings.toggleProvider(provider.id) },
                 )
+            }
+        }
+
+        item {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                colors = CardDefaults.cardColors(containerColor = JoySurfaceHigh.copy(alpha = 0.55f)),
+            ) {
+                Column(Modifier.padding(14.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Rounded.Wifi, contentDescription = null, tint = JoyPurple)
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("Connection test", style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                text = "Checks every MovieBox mirror and reports what each one returns.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = JoyMuted,
+                            )
+                        }
+                    }
+
+                    val results = probeResults
+                    if (results != null) {
+                        Spacer(Modifier.height(10.dp))
+                        if (results.isEmpty()) {
+                            Text(
+                                text = probeError ?: "No mirrors reported a result.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = JoyMuted,
+                            )
+                        }
+                        results.forEach { check ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 3.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = check.host,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (check.ok) JoyGreen else JoyMuted,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Text(
+                                    text = check.summary,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (check.ok) JoyGreen else MaterialTheme.colorScheme.error,
+                                )
+                            }
+                        }
+                        if (results.none { it.ok }) {
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                text = "No mirror accepted the request. If this happens on every network, " +
+                                    "the provider changed its API — an app update from the releases page " +
+                                    "will carry the fix.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedButton(
+                        enabled = !probeRunning,
+                        onClick = {
+                            probeRunning = true
+                            probeError = null
+                            scope.launch {
+                                val outcome = runCatching {
+                                    container.movieBox.probeConnection()
+                                }
+                                probeResults = outcome.getOrDefault(emptyList())
+                                outcome.exceptionOrNull()?.let { probeError = it.message }
+                                probeRunning = false
+                            }
+                        },
+                    ) {
+                        Icon(
+                            Icons.Rounded.Refresh,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (probeRunning) "Testing…" else "Test connection")
+                    }
+                }
             }
         }
 

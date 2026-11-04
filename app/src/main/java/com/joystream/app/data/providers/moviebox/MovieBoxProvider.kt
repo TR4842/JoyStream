@@ -42,6 +42,14 @@ class MovieBoxProvider(private val client: MovieBoxClient) : MediaProvider {
     override val supportsHomeFeed: Boolean = true
     override val supportsSubtitles: Boolean = true
 
+    override val connectionDiagnostics: String
+        get() = client.lastDiagnostics
+
+    override suspend fun probeConnection(): List<MediaProvider.HostCheck> =
+        client.probeHosts().map { probe ->
+            MediaProvider.HostCheck(host = probe.host, summary = probe.summary, ok = probe.ok)
+        }
+
     // ---------------------------------------------------------------- home feed
 
     override suspend fun homeFeed(): List<HomeRow> {

@@ -30,8 +30,10 @@ class AppContainer(context: Context) {
     private val sessionStore = MovieBoxSessionStore(appContext)
     private val movieBoxClient = MovieBoxClient(Http.client, sessionStore)
 
+    val movieBox: MovieBoxProvider = MovieBoxProvider(movieBoxClient)
+
     val providers: List<MediaProvider> = listOf(
-        MovieBoxProvider(movieBoxClient),
+        movieBox,
         DramachiProvider(Http.client),
     )
 

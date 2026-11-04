@@ -24,6 +24,19 @@ class ProviderException(
  * the repository fans out across whichever ones the user has enabled.
  */
 interface MediaProvider {
+
+    /** Last failure detail (which mirrors were tried and what they said). */
+    val connectionDiagnostics: String get() = ""
+
+    /** Health check of every backend host; empty when the provider has one host. */
+    suspend fun probeConnection(): List<HostCheck> = emptyList()
+
+    /** Outcome of a single host health check. */
+    data class HostCheck(
+        val host: String,
+        val summary: String,
+        val ok: Boolean,
+    )
     val id: String
     val displayName: String
 
