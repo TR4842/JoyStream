@@ -11,11 +11,6 @@ on:
   workflow_dispatch:
   repository_dispatch:
     types: [upstream-updated]
-  # sync-main.yml mirrors the delivery branch into main; re-check right after,
-  # so a mirror that lands before the next cron slot still publishes promptly.
-  workflow_run:
-    workflows: [Sync main]
-    types: [completed]
 
 permissions:
   contents: write

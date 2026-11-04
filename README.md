@@ -221,7 +221,7 @@ in-place update will fail with a signature mismatch.
    `tools/bump_version.py`, which increments `versionCode`, bumps the patch
    `versionName`, records the new SHA/date and appends to
    `UPSTREAM_CHANGELOG.md`.
-3. The workflow pushes to `main`, then builds, tags `v<versionName>` and creates
-   a release with the APKs attached.
+3. The workflow commits the bump to `main`, builds, tags `v<versionName>` and
+   creates a release with the APKs attached.
 4. Installed apps see the new release on their next update check (startup, or
    Settings → Check for updates) and can download/install it in place.
