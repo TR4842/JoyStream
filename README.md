@@ -20,6 +20,11 @@ upstream repo**.
 | **Providers** | MovieBox (signed BFF API), Dramachi, IPTV via M3U |
 | **Distribution** | GitHub Releases APK, self-updating in app |
 
+**Install the current build:**
+[`joystream-1.0.1.apk`](https://github.com/TR4842/JoyStream/releases/latest) —
+signed release APK, ~15 MB. Allow installs from unknown sources when prompted;
+the in-app updater uses the same signature, so future versions install in place.
+
 ---
 
 ## Features
