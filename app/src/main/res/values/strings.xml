@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">JoyStream</string>
+    <string name="download_channel_name">Downloads</string>
+    <string name="download_channel_description">Movie and episode downloads</string>
+    <string name="update_channel_name">App updates</string>
+    <string name="update_channel_description">New JoyStream builds and upstream provider updates</string>
+</resources>

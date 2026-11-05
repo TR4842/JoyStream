@@ -1,0 +1,211 @@
+name: Sync upstream MovieBox-Tui
+
+# JoyStream's provider engine tracks mesamirh/MovieBox-Tui. Whenever upstream
+# moves, this workflow bumps the app version, rebuilds both APKs, publishes a
+# GitHub release and pushes the bumped version — and the in-app updater on every
+# installed device picks that release up automatically.
+
+on:
+  schedule:
+    - cron: "0 */6 * * *" # every 6 hours
+  workflow_dispatch:
+  repository_dispatch:
+    types: [upstream-updated]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: mesamirh/MovieBox-Tui
+
+jobs:
+  sync:
+    name: Detect upstream changes and release
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve upstream head
+        id: upstream
+        run: |
+          set -euo pipefail
+          API="https://api.github.com/repos/${UPSTREAM_REPO}"
+          SHA=$(curl -fsSL -H "Accept: application/vnd.github+json" "$API/commits?per_page=1" | jq -r '.[0].sha')
+          DATE=$(curl -fsSL -H "Accept: application/vnd.github+json" "$API/commits?per_page=1" | jq -r '.[0].commit.committer.date')
+          PREVIOUS=$(grep '^upstreamSha=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "date=$DATE" >> "$GITHUB_OUTPUT"
+          echo "previous=$PREVIOUS" >> "$GITHUB_OUTPUT"
+          if [ "$SHA" = "$PREVIOUS" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Upstream unchanged ($SHA)."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Upstream moved: ${PREVIOUS:-none} -> $SHA"
+          fi
+
+      - name: Collect upstream changelog
+        if: steps.upstream.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          PREV="${{ steps.upstream.outputs.previous }}"
+          SHA="${{ steps.upstream.outputs.sha }}"
+          : > upstream-commits.md
+          if [ -n "$PREV" ]; then
+            curl -fsSL -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${UPSTREAM_REPO}/compare/${PREV}...${SHA}" \
+              | jq -r '.commits[] | "- " + (.commit.message | split("\n")[0])' >> upstream-commits.md || true
+          fi
+          if [ ! -s upstream-commits.md ]; then
+            curl -fsSL -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${UPSTREAM_REPO}/commits/${SHA}" \
+              | jq -r '"- " + (.commit.message | split("\n")[0])' >> upstream-commits.md || true
+          fi
+          echo "--- upstream commits ---"
+          cat upstream-commits.md
+
+      - name: Bump app version
+        if: steps.upstream.outputs.changed == 'true'
+        id: bump
+        run: |
+          set -euo pipefail
+          python3 tools/bump_version.py \
+            --sha "${{ steps.upstream.outputs.sha }}" \
+            --date "${{ steps.upstream.outputs.date }}" \
+            --commits upstream-commits.md | tee bump-output.txt
+          VERSION=$(grep '^versionName=' version.properties | cut -d= -f2 | tr -d '[:space:]')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Set up JDK 17
+        if: steps.upstream.outputs.changed == 'true'
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        if: steps.upstream.outputs.changed == 'true'
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Verify Android SDK
+        if: steps.upstream.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          echo "ANDROID_HOME=${ANDROID_HOME:-<unset>}"
+          ls "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}/platforms" || true
+
+      - name: Configure signing
+        if: steps.upstream.outputs.changed == 'true'
+        id: signing
+        env:
+          KEYSTORE_B64: ${{ secrets.JOYSTREAM_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.JOYSTREAM_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.JOYSTREAM_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.JOYSTREAM_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -n "${KEYSTORE_B64:-}" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            {
+              echo "path=$RUNNER_TEMP/release.jks"
+              echo "store_password=$KEYSTORE_PASSWORD"
+              echo "alias=$KEY_ALIAS"
+              echo "key_password=${KEY_PASSWORD:-$KEYSTORE_PASSWORD}"
+            } >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "path=$GITHUB_WORKSPACE/keystore/joystream-dev.jks"
+              echo "store_password=joystream"
+              echo "alias=joystream"
+              echo "key_password=joystream"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build APKs
+        if: steps.upstream.outputs.changed == 'true'
+        env:
+          JOYSTREAM_KEYSTORE: ${{ steps.signing.outputs.path }}
+          JOYSTREAM_KEYSTORE_PASSWORD: ${{ steps.signing.outputs.store_password }}
+          JOYSTREAM_KEY_ALIAS: ${{ steps.signing.outputs.alias }}
+          JOYSTREAM_KEY_PASSWORD: ${{ steps.signing.outputs.key_password }}
+        run: |
+          set -euo pipefail
+          gradle :app:assembleDebug :app:assembleRelease --stacktrace
+          VERSION="${{ steps.bump.outputs.version }}"
+          mkdir -p artifacts
+          cp app/build/outputs/apk/release/app-release.apk "artifacts/joystream-${VERSION}.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk "artifacts/joystream-${VERSION}-debug.apk"
+          ls -lh artifacts
+
+      - name: Write release notes
+        if: steps.upstream.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.bump.outputs.version }}"
+          SHA="${{ steps.upstream.outputs.sha }}"
+          SHORT=$(echo "$SHA" | cut -c1-7)
+          PREV="${{ steps.upstream.outputs.previous }}"
+          {
+            echo "Automated rebuild for upstream \`${UPSTREAM_REPO}\` @ \`${SHORT}\`."
+            echo
+            echo "JoyStream's scrapers follow the MovieBox-Tui provider engine, so a new"
+            echo "APK is published whenever upstream changes. The app checks this release"
+            echo "feed on launch and installs the update in place."
+            echo
+            echo "### Upstream changes"
+            echo
+            cat upstream-commits.md
+            echo
+            echo "### Notes"
+            echo
+            echo "- Install the \`joystream-${VERSION}.apk\` asset (same signing key as previous builds, so it updates in place)."
+            echo "- Compare: https://github.com/${UPSTREAM_REPO}/compare/${PREV:-main}...${SHA}"
+          } > release-notes.md
+          cat release-notes.md
+
+      - name: Commit version bump and tag
+        if: steps.upstream.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.bump.outputs.version }}"
+          git config user.name "joystream-bot"
+          git config user.email "joystream-bot@users.noreply.github.com"
+          git add version.properties UPSTREAM_CHANGELOG.md
+          git commit -m "chore: rebuild for upstream ${{ steps.upstream.outputs.sha }} (v${VERSION})"
+          LATEST_TAG=$(git tag --list 'v*' --sort=-v:refname | head -1 || true)
+          if [ "$LATEST_TAG" = "v${VERSION}" ]; then
+            echo "v${VERSION} already exists; nothing new to tag" >&2
+            exit 1
+          fi
+          git tag "v${VERSION}"
+          git push origin main
+          git push origin "v${VERSION}"
+
+      - name: Publish release
+        if: steps.upstream.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.bump.outputs.version }}"
+          SHORT_SHA=$(echo "${{ steps.upstream.outputs.sha }}" | cut -c1-7)
+          if gh release view "v${VERSION}" >/dev/null 2>&1; then
+            gh release upload "v${VERSION}" artifacts/*.apk --clobber
+            echo "Updated existing release v${VERSION}"
+            exit 0
+          fi
+          gh release create "v${VERSION}" \
+            --title "JoyStream v${VERSION} · upstream ${SHORT_SHA}" \
+            --notes-file release-notes.md \
+            artifacts/*.apk
