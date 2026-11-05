@@ -78,10 +78,10 @@ class MovieBoxCryptoTest {
     @Test
     fun `client identity looks like the official android client`() {
         val identity = MovieBoxCrypto.generateClientIdentity()
-        assertTrue(identity.userAgent.startsWith("com.community.oneroom/"))
+        assertTrue(identity.userAgent.startsWith("com.community.mbox.in/50020130"))
         assertTrue(identity.userAgent.contains("Cronet/"))
-        assertTrue(identity.clientInfo.contains("\"package_name\":\"com.community.oneroom\""))
-        assertTrue(identity.clientInfo.contains("\"sp_code\":\"40401\""))
+        assertTrue(identity.clientInfo.contains("\"package_name\":\"com.community.mbox.in\""))
+        assertTrue(identity.clientInfo.contains("\"version_name\":\"4.0.03.0920.03\""))
         val octets = identity.spoofedIp.split('.')
         assertEquals(4, octets.size)
     }
