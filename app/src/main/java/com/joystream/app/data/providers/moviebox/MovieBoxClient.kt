@@ -49,6 +49,34 @@ class MovieBoxClient(
     suspend fun post(pathAndQuery: String, body: String): JsonElement =
         request("POST", pathAndQuery, body)
 
+    /** Current bearer token, bootstrapping if needed. Used by the h5 play path. */
+    suspend fun bearerToken(): String = ensureToken()
+
+    /**
+     * GET an absolute URL that lives outside the mobile BFF (the h5 player hosts)
+     * with an explicit header map — no BFF signing, they use the bearer token.
+     */
+    suspend fun getAbsolute(url: String, headers: Map<String, String>): JsonElement =
+        withContext(Dispatchers.IO) {
+            val request = Request.Builder()
+                .url(url)
+                .apply { headers.forEach { (key, value) -> header(key, value) } }
+                .get()
+                .build()
+            okHttp.newCall(request).execute().use { response ->
+                val text = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    throw ProviderException(
+                        "MovieBox web player returned HTTP ${response.code}",
+                        statusCode = response.code,
+                    )
+                }
+                if (text.isBlank()) throw IOException("empty web player response")
+                val parsed = Json.parseToJsonElement(text)
+                (parsed as? JsonObject)?.get("data") ?: parsed
+            }
+        }
+
     private suspend fun request(
         method: String,
         pathAndQuery: String,
@@ -58,7 +86,12 @@ class MovieBoxClient(
         return try {
             requestHosts(method, pathAndQuery, body, token)
         } catch (error: ProviderException) {
-            // Session may have expired server-side; refresh once and retry.
+            if (error.statusCode == SIGNATURE_REJECTED) {
+                // Either the session expired or the signing key rotated; try the
+                // previous key first (cheap), then a brand-new token.
+                runCatching { requestHosts(method, pathAndQuery, body, token, usePreviousKey = true) }
+                    .onSuccess { return it }
+            }
             sessionStore.clear()
             val fresh = ensureToken(force = true)
             requestHosts(method, pathAndQuery, body, fresh)
@@ -75,14 +108,69 @@ class MovieBoxClient(
                 val cached = sessionStore.load()
                 if (cached != null && cached.isValid()) return@withLock cached.token
             }
-            val payload = requestHosts("POST", VISITOR_LOGIN, "{}", null)
-            val obj = payload.asObj() ?: throw ProviderException("MovieBox login returned no payload")
-            val token = obj.str("token")
-                ?: throw ProviderException("MovieBox login returned no token")
-            val session = MovieBoxSession.fromToken(token, obj.str("uid", "userId"))
+            val token = bootstrapToken()
+            val session = MovieBoxSession.fromToken(token)
             sessionStore.save(session)
             token
         }
+    }
+
+    /**
+     * The client no longer logs in: it signs a throwaway ranking-list request and
+     * the gateway hands back the bearer token as JSON in the `x-user` response
+     * header. Any signed host does the job, so this walks the mirror list.
+     */
+    private suspend fun bootstrapToken(): String = withContext(Dispatchers.IO) {
+        var lastStatus: Int? = null
+        var lastError: String? = null
+        for (host in hosts()) {
+            val url = host + BOOTSTRAP_PATH
+            val result = runCatching {
+                val headers = MovieBoxCrypto.signedHeaders(
+                    method = "GET",
+                    url = url,
+                    body = null,
+                    token = null,
+                    userAgent = identity.userAgent,
+                    clientInfo = identity.clientInfo,
+                    spoofedIp = identity.spoofedIp,
+                )
+                val request = Request.Builder()
+                    .url(url)
+                    .apply { headers.forEach { (key, value) -> header(key, value) } }
+                    .get()
+                    .build()
+                okHttp.newCall(request).execute().use { response ->
+                    lastStatus = response.code
+                    response.header("x-user")
+                }
+            }
+            val rawHeader = result.getOrNull()
+            val token = rawHeader?.let(::tokenFromHeader)
+            if (!token.isNullOrBlank()) {
+                lastDiagnostics = "token bootstrapped via ${host.substringAfter("//")}"
+                return@withContext token
+            }
+            if (result.isFailure) {
+                lastError = result.exceptionOrNull()?.javaClass?.simpleName
+            }
+        }
+        throw ProviderException(
+            "MovieBox refused the signing handshake" +
+                (lastError?.let { " ($it)" } ?: "") +
+                (lastStatus?.let { " (HTTP $it)" } ?: "") +
+                " — the client key may have rotated again",
+            statusCode = lastStatus,
+        )
+    }
+
+    /** `x-user` is JSON like {"token":"...","uid":...}; tolerate plain strings too. */
+    private fun tokenFromHeader(raw: String?): String? {
+        if (raw.isNullOrBlank()) return null
+        val trimmed = raw.trim()
+        if (!trimmed.startsWith("{")) return trimmed.takeIf { it.length > 20 }
+        val obj = runCatching { Json.parseToJsonElement(trimmed) as? JsonObject }.getOrNull()
+        return obj?.str("token")
     }
 
     private suspend fun requestHosts(
@@ -90,6 +178,7 @@ class MovieBoxClient(
         pathAndQuery: String,
         body: String?,
         authToken: String?,
+        usePreviousKey: Boolean = false,
     ): JsonElement = withContext(Dispatchers.IO) {
         val startIndex = activeHostIndex
         var backoffMs = 50L
@@ -114,6 +203,7 @@ class MovieBoxClient(
                 userAgent = identity.userAgent,
                 clientInfo = identity.clientInfo,
                 spoofedIp = identity.spoofedIp,
+                usePreviousKey = usePreviousKey,
             )
 
             val requestBuilder = Request.Builder().url(url)
@@ -187,12 +277,13 @@ class MovieBoxClient(
      */
     suspend fun probeHosts(): List<HostProbe> = withContext(Dispatchers.IO) {
         hosts().map { host ->
-            val url = host + VISITOR_LOGIN
+            val url = host + BOOTSTRAP_PATH
+            var handshake = false
             val result = runCatching {
                 val headers = MovieBoxCrypto.signedHeaders(
-                    method = "POST",
+                    method = "GET",
                     url = url,
-                    body = "{}",
+                    body = null,
                     token = null,
                     userAgent = identity.userAgent,
                     clientInfo = identity.clientInfo,
@@ -201,10 +292,10 @@ class MovieBoxClient(
                 val request = Request.Builder()
                     .url(url)
                     .apply { headers.forEach { (key, value) -> header(key, value) } }
-                    .post("{}".toRequestBody(jsonMediaType))
+                    .get()
                     .build()
                 okHttp.newCall(request).execute().use { response ->
-                    response.close()
+                    handshake = !tokenFromHeader(response.header("x-user")).isNullOrBlank()
                     response.code
                 }
             }
@@ -212,6 +303,7 @@ class MovieBoxClient(
                 host = host.substringAfter("//"),
                 statusCode = result.getOrNull(),
                 error = result.exceptionOrNull()?.javaClass?.simpleName,
+                tokenIssued = handshake,
             )
         }
     }
@@ -221,11 +313,13 @@ class MovieBoxClient(
         val host: String,
         val statusCode: Int?,
         val error: String? = null,
+        /** True when this host handed back a bearer token. */
+        val tokenIssued: Boolean = false,
     ) {
-        val ok: Boolean get() = statusCode in 200..299
+        val ok: Boolean get() = tokenIssued
         val summary: String
             get() = when {
-                ok -> "OK"
+                tokenIssued -> "OK · token issued"
                 statusCode != null -> "HTTP $statusCode"
                 else -> error ?: "unreachable"
             }
@@ -252,7 +346,11 @@ class MovieBoxClient(
             "https://api.inmoviebox.com",
         )
 
-        private const val VISITOR_LOGIN = "/wefeed-mobile-bff/user-api/visitor-login"
+        /** Throwaway call whose only purpose is the `x-user` token header. */
+        const val BOOTSTRAP_PATH =
+            "/wefeed-mobile-bff/tab/ranking-list?tabId=0&categoryType=4516404531735022304&page=1&perPage=1"
+
+        private const val SIGNATURE_REJECTED = 441
 
         private const val NOT_FOUND = 404
     }

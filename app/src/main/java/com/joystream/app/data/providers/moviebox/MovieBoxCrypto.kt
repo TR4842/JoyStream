@@ -23,20 +23,23 @@ import kotlin.random.Random
  */
 object MovieBoxCrypto {
 
-    private val SECRET_BYTES = byteArrayOf(
-        0xEF.toByte(), 0xA8.toByte(), 0x91.toByte(), 0x97.toByte(),
-        0x4E, 0xEC.toByte(), 0xD3.toByte(), 0x14,
-        0x8D.toByte(), 0xF6.toByte(), 0x3A, 0xA6.toByte(),
-        0x11, 0x60, 0x2D, 0xEF.toByte(),
-        0xD1.toByte(), 0x01, 0x25, 0x9B.toByte(),
-        0xA5.toByte(), 0x21, 0x02, 0x2C,
-        0x57, 0xAE.toByte(), 0x05, 0x66,
-        0xBD.toByte(), 0x8E.toByte(),
-    )
+    /**
+     * Signing keys, base64(double base64). The provider rotates these whenever
+     * the client is updated, so both the current and the previous key are kept
+     * and the client retries with the other one on a signature rejection.
+     */
+    private const val SECRET_KEY_PRIMARY_B64 = "NzZpUmwwN3MweFNOOWpxbUVXQXQ3OUVCSlp1bElRSXNWNjRGWnIyTw=="
+    private const val SECRET_KEY_PREVIOUS_B64 = "WHFuMm5uTzQxL0w5Mm8xaXVYaFNMSFRiWHZZNFo1Wlo2Mm04bVNMQQ=="
+
+    val SECRET_BYTES: ByteArray = decodeSecret(SECRET_KEY_PRIMARY_B64)
+    private val PREVIOUS_SECRET_BYTES: ByteArray = decodeSecret(SECRET_KEY_PREVIOUS_B64)
+
+    private fun decodeSecret(encoded: String): ByteArray =
+        base64Decode(base64Decode(encoded).decodeToString())
 
     private const val SIGNATURE_BODY_MAX_BYTES = 102_400
-    private const val PACKAGE_NAME = "com.community.oneroom"
-    private const val VERSION_NAME = "4.0.01.0813.03"
+    private const val PACKAGE_NAME = "com.community.mbox.in"
+    private const val VERSION_NAME = "4.0.03.0920.03"
 
     fun md5Hex(input: ByteArray): String {
         val digest = MessageDigest.getInstance("MD5").digest(input)
@@ -108,10 +111,12 @@ object MovieBoxCrypto {
         url: String,
         body: String?,
         timestampMs: Long,
+        usePreviousKey: Boolean = false,
     ): String {
         val canonical = buildCanonicalString(method, accept, contentType, url, body, timestampMs)
         val mac = Mac.getInstance("HmacMD5")
-        mac.init(SecretKeySpec(SECRET_BYTES, "HmacMD5"))
+        val key = if (usePreviousKey) PREVIOUS_SECRET_BYTES else SECRET_BYTES
+        mac.init(SecretKeySpec(key, "HmacMD5"))
         val signature = base64Encode(mac.doFinal(canonical.toByteArray()))
         return "$timestampMs|2|$signature"
     }
@@ -126,6 +131,7 @@ object MovieBoxCrypto {
         clientInfo: String,
         spoofedIp: String,
         timestampMs: Long = System.currentTimeMillis(),
+        usePreviousKey: Boolean = false,
     ): Map<String, String> {
         val headers = linkedMapOf(
             "User-Agent" to userAgent,
@@ -140,10 +146,10 @@ object MovieBoxCrypto {
                 url = url,
                 body = body,
                 timestampMs = timestampMs,
+                usePreviousKey = usePreviousKey,
             ),
             "x-client-info" to clientInfo,
             "x-client-status" to "0",
-            "x-forwarded-for" to spoofedIp,
         )
         if (!token.isNullOrBlank()) {
             headers["Authorization"] = "Bearer $token"
@@ -164,7 +170,7 @@ object MovieBoxCrypto {
             "23078RKD5C", "2201117TY", "2201117TG", "22101316G",
             "21121210G", "M2012K11AG", "M2007J20CG",
         )
-        val versionCodes = listOf(50020117, 50020118, 50020119, 50020120, 50020121)
+        val versionCodes = listOf(50020130)
         val networks = listOf("NETWORK_WIFI", "NETWORK_MOBILE")
         val timezones = listOf(
             "Asia/Kolkata", "Asia/Shanghai", "Asia/Tokyo", "Asia/Dhaka",
@@ -178,7 +184,7 @@ object MovieBoxCrypto {
         val timezone = timezones.random()
 
         val userAgent = "$PACKAGE_NAME/$versionCode (Linux; U; Android ${android.first}; " +
-            "en_US; $device; Build/${android.second}; Cronet/135.0.7012.3)"
+            "en_US; $device; Build/${android.second}; Cronet/145.0.7582.0)"
 
         val clientInfo = buildString {
             append("{\"package_name\":\"").append(PACKAGE_NAME).append("\",")
@@ -186,18 +192,16 @@ object MovieBoxCrypto {
             append("\"version_code\":").append(versionCode).append(',')
             append("\"os\":\"android\",")
             append("\"os_version\":\"").append(android.first).append("\",")
-            append("\"install_ch\":\"ps\",")
             append("\"device_id\":\"").append(randomHex(32)).append("\",")
-            append("\"install_store\":\"ps\",")
+            append("\"install_store\":\"official\",")
             append("\"gaid\":\"").append(randomUuid()).append("\",")
-            append("\"brand\":\"Redmi\",")
+            append("\"brand\":\"Google\",")
             append("\"model\":\"").append(device).append("\",")
             append("\"system_language\":\"en\",")
             append("\"net\":\"").append(network).append("\",")
-            append("\"region\":\"US\",")
+            append("\"region\":\"IN\",")
             append("\"timezone\":\"").append(timezone).append("\",")
-            append("\"sp_code\":\"40401\",")
-            append("\"X-Play-Mode\":\"2\"}")
+            append("\"sp_code\":\"\"}")
         }
 
         return ClientIdentity(userAgent = userAgent, clientInfo = clientInfo, spoofedIp = randomSpoofedIp())
@@ -249,6 +253,31 @@ object MovieBoxCrypto {
             index += 3
         }
         return builder.toString()
+    }
+
+    /**
+     * Standard base64 decoder (RFC 4648), padding tolerant and pure JVM.
+     * `java.util.Base64` is API 26+ and `android.util.Base64` is unavailable in
+     * unit tests, so the small decode lives here.
+     */
+    fun base64Decode(value: String): ByteArray {
+        val alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+        val normalized = value.replace('-', '+').replace('_', '/')
+        val output = java.io.ByteArrayOutputStream(normalized.length * 3 / 4 + 3)
+        var buffer = 0
+        var bits = 0
+        for (char in normalized) {
+            if (char == '=' || char.isWhitespace()) continue
+            val index = alphabet.indexOf(char)
+            if (index < 0) continue
+            buffer = (buffer shl 6) or index
+            bits += 6
+            if (bits >= 8) {
+                bits -= 8
+                output.write((buffer shr bits) and 0xFF)
+            }
+        }
+        return output.toByteArray()
     }
 
     /** Decodes a base64 blob tolerating URL-safe alphabets and missing padding. */

@@ -107,6 +107,8 @@ data class StreamRelease(
     val season: Int? = null,
     val episode: Int? = null,
     val resourceId: String? = null,
+    /** Stream id used by the caption endpoint, when the provider exposes one. */
+    val streamId: String? = null,
     val mirrorLabel: String = "Direct",
 ) {
     val canDownload: Boolean get() = kind == StreamKind.PROGRESSIVE && url.startsWith("http")

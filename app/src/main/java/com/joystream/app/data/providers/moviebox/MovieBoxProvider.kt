@@ -42,6 +42,9 @@ class MovieBoxProvider(private val client: MovieBoxClient) : MediaProvider {
     override val supportsHomeFeed: Boolean = true
     override val supportsSubtitles: Boolean = true
 
+    /** subjectId -> web slug ("detailPath"), cached because details() supplies it. */
+    private val detailPaths = java.util.concurrent.ConcurrentHashMap<String, String>()
+
     override val connectionDiagnostics: String
         get() = client.lastDiagnostics
 
@@ -97,12 +100,29 @@ class MovieBoxProvider(private val client: MovieBoxClient) : MediaProvider {
             append(",\"perPage\":15,\"subjectType\":0}")
         }
         val payload = client.post(SEARCH_PATH, body)
-        val subjects = payload.obj("data")?.arr("results")?.firstOrNull()?.asObj()?.arr("subjects")
+        val match = searchSubjects(payload)
+        if (match.isNotEmpty()) return match
+
+        // Older API shape kept as a fallback in case a mirror still serves v2.
+        val legacy = runCatching {
+            client.post(LEGACY_SEARCH_PATH, body)
+        }.getOrNull() ?: return emptyList()
+        return searchSubjects(legacy)
+    }
+
+    /** Search payloads wrap each hit in a `subject` object; some return the subject directly. */
+    private fun searchSubjects(payload: JsonElement): List<CatalogItem> {
+        val data = payload.obj("data")
+        val items = data?.arr("items", "list")
+            ?: payload.arr("items", "list")
+            ?: data?.arr("results")?.firstOrNull()?.asObj()?.arr("subjects")
             ?: payload.arr("results")?.firstOrNull()?.asObj()?.arr("subjects")
-            ?: payload.arr("list")
-            ?: payload.arr("items")
             ?: JsonArray(emptyList())
-        return subjects.mapNotNull { it.asObj()?.let(::toCatalogItem) }
+        return items.mapNotNull { element ->
+            val wrapper = element.asObj() ?: return@mapNotNull null
+            val subject = wrapper.obj("subject", "data") ?: wrapper
+            toCatalogItem(subject)
+        }.distinctBy { it.key }
     }
 
     // ------------------------------------------------------------------ details
@@ -138,6 +158,10 @@ class MovieBoxProvider(private val client: MovieBoxClient) : MediaProvider {
                 label = dub.str("title", "name", "lanName") ?: language,
             )
         }.orEmpty()
+
+        val detailPath = subject.str("detailPath")
+            ?: subject.str("detailUrl")?.trimEnd('/')?.substringAfterLast('/')
+        if (!detailPath.isNullOrBlank()) detailPaths[id.value] = detailPath
 
         return MediaDetails(
             id = id,
@@ -274,7 +298,15 @@ class MovieBoxProvider(private val client: MovieBoxClient) : MediaProvider {
                 }
             }
 
-        // 3) Adaptive streams from play-info (DASH manifests signed via cookie).
+        // 3) Web player endpoint: the same catalog served by the h5 BFF. This is
+        //    what keeps playback working when the native play-info endpoint
+        //    returns nothing, and it needs the `detailPath` slug.
+        if (results.isEmpty()) {
+            runCatching { webPlayReleases(subjectId, season, episode) }.getOrDefault(emptyList())
+                .forEach(::add)
+        }
+
+        // 4) Adaptive streams from play-info (DASH manifests signed via cookie).
         runCatching { client.get(playInfoPath) }
             .onSuccess { payload ->
                 val title = cleanTitle(payload.str("title") ?: "")
@@ -354,14 +386,29 @@ class MovieBoxProvider(private val client: MovieBoxClient) : MediaProvider {
     // ---------------------------------------------------------------- subtitles
 
     override suspend fun subtitles(id: MediaId, release: StreamRelease): List<SubtitleTrack> {
-        val resourceId = release.resourceId ?: return emptyList()
-        val payload = runCatching {
-            client.get("$CAPTIONS_PATH${id.value}&resourceId=$resourceId")
-        }.getOrNull() ?: return emptyList()
+        val captions = mutableListOf<JsonElement>()
 
-        val captions = payload.arr("extCaptions")
-            ?: payload.obj("data")?.arr("extCaptions")
-            ?: return emptyList()
+        release.resourceId?.let { resourceId ->
+            runCatching {
+                client.get("$CAPTIONS_PATH${id.value}&resourceId=$resourceId")
+            }.getOrNull()?.let { payload ->
+                payload.arr("extCaptions")
+                    ?: payload.obj("data")?.arr("extCaptions")
+                    ?: payload.obj("data")?.arr("captions")
+                    ?: payload.arr("captions")
+            }?.let(captions::addAll)
+        }
+
+        if (captions.isEmpty() && release.streamId != null) {
+            runCatching {
+                client.get("$STREAM_CAPTIONS_PATH${id.value}&streamId=${release.streamId}")
+            }.getOrNull()?.let { payload ->
+                payload.arr("captions")
+                    ?: payload.obj("data")?.arr("captions")
+            }?.let(captions::addAll)
+        }
+
+        if (captions.isEmpty()) return emptyList()
 
         val seen = mutableSetOf<String>()
         return captions.mapNotNull { element ->
@@ -371,11 +418,131 @@ class MovieBoxProvider(private val client: MovieBoxClient) : MediaProvider {
             val size = caption.long("size") ?: 0L
             if (size in 1..50) return@mapNotNull null
             SubtitleTrack(
-                name = caption.str("lanName", "lan") ?: "Subtitle",
+                name = caption.str("lanName", "lan", "language") ?: "Subtitle",
                 url = url,
-                language = caption.str("lan"),
+                language = caption.str("lan", "language"),
             )
         }
+    }
+
+    /**
+     * Streams from the h5 player API (`/wefeed-h5api-bff/subject/play`), which is
+     * a different surface from the mobile BFF: it is signed with the same bearer
+     * token, needs the web slug, and serves both direct MP4 files and DASH
+     * manifests whose real URL is buried in a CloudFront/Edge cookie.
+     */
+    private suspend fun webPlayReleases(
+        subjectId: String,
+        season: Int,
+        episode: Int,
+    ): List<StreamRelease> {
+        val detailPath = detailPaths[subjectId]
+            ?: runCatching { details(MediaId(PROVIDER_ID, subjectId)) }.getOrNull()
+                ?.let { detailPaths[subjectId] }
+            ?: ""
+        if (detailPath.isBlank()) return emptyList()
+
+        val token = client.bearerToken()
+        val releases = mutableListOf<StreamRelease>()
+
+        for (domain in WEB_DOMAINS) {
+            val playUrl = "$domain/wefeed-h5api-bff/subject/play" +
+                "?subjectId=$subjectId&se=${season.coerceAtLeast(0)}&ep=${episode.coerceAtLeast(0)}" +
+                "&detailPath=$detailPath&streamSignType=1" +
+                "&supportCodecs%5Bhevc%5D=1&supportCodecs%5Bh264%5D=1"
+            val referer = "$domain/movies/$detailPath?id=$subjectId&type=/movie/detail" +
+                "&detailSe=&detailEp=&lang=en"
+            val headers = linkedMapOf(
+                "User-Agent" to WEB_USER_AGENT,
+                "Referer" to referer,
+                "Accept" to "application/json",
+                "x-client-info" to "{\"timezone\":\"Asia/Calcutta\"}",
+                "x-request-lang" to "en",
+                "x-vip-restrict" to "0",
+                "x-no-high-risk-restrict" to "0",
+                "x-source" to "moviebox",
+            )
+            if (token.isNotBlank()) headers["Authorization"] = "Bearer $token"
+
+            val payload = runCatching { client.getAbsolute(playUrl, headers) }.getOrNull()
+                ?: continue
+            val data = payload.obj("data") ?: payload
+            val streams = data.arr("streams").orEmpty()
+            val dash = data.arr("dash").orEmpty()
+            if (streams.isEmpty() && dash.isEmpty()) continue
+
+            val playbackHeaders = mapOf(
+                "Referer" to "$domain/",
+                "Origin" to domain,
+                "User-Agent" to WEB_USER_AGENT,
+            )
+
+            streams.forEach { element ->
+                val stream = element.asObj() ?: return@forEach
+                val url = stream.str("url")?.takeIf { it.startsWith("http") } ?: return@forEach
+                if (isPlaceholderUrl(url)) return@forEach
+                val resolution = stream.str("resolutions", "resolution").orEmpty()
+                releases += StreamRelease(
+                    provider = PROVIDER_ID,
+                    title = cleanTitle(stream.str("format", "codecName").orEmpty())
+                        .ifBlank { "Web stream" },
+                    url = url,
+                    kind = if (url.contains(".mpd")) StreamKind.DASH else StreamKind.PROGRESSIVE,
+                    headers = playbackHeaders,
+                    qualityLabel = resolution.ifBlank { null }?.let { "${it}p" },
+                    resolutionHeight = resolutionHeight(resolution),
+                    codec = stream.str("codecName"),
+                    sizeBytes = stream.long("size")?.takeIf { it > 0 },
+                    season = season.takeIf { it > 0 },
+                    episode = episode.takeIf { it > 0 },
+                    resourceId = stream.str("id"),
+                    streamId = stream.str("id"),
+                    mirrorLabel = domain.substringAfter("//"),
+                )
+            }
+
+            dash.forEach { element ->
+                val entry = element.asObj() ?: return@forEach
+                val signCookie = entry.str("signCookie").orEmpty()
+                val manifest = MovieBoxCrypto.dashManifestFromPolicy(signCookie)
+                    ?: entry.str("url")?.takeIf { it.startsWith("http") && !isPlaceholderUrl(it) }
+                    ?: return@forEach
+                val cookieHeader = signCookie
+                    .trimEnd(';')
+                    .split(';')
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
+                    .joinToString("; ")
+                val headersWithCookie = if (cookieHeader.isBlank()) {
+                    playbackHeaders
+                } else {
+                    playbackHeaders + ("Cookie" to cookieHeader)
+                }
+                val resolution = entry.str("resolutions").orEmpty()
+                releases += StreamRelease(
+                    provider = PROVIDER_ID,
+                    title = "DASH · ${resolution.ifBlank { "adaptive" }}",
+                    url = manifest,
+                    kind = StreamKind.DASH,
+                    headers = headersWithCookie,
+                    qualityLabel = if (resolution.isBlank()) "adaptive" else "${resolution}p",
+                    resolutionHeight = resolutionHeight(resolution),
+                    codec = "hevc/h264",
+                    season = season.takeIf { it > 0 },
+                    episode = episode.takeIf { it > 0 },
+                    mirrorLabel = domain.substringAfter("//"),
+                )
+            }
+            break // first domain that answers wins
+        }
+        return releases
+    }
+
+    private fun resolutionHeight(raw: String): Int? {
+        for (quality in listOf(2160, 1440, 1080, 720, 480, 360)) {
+            if (raw.contains(quality.toString())) return quality
+        }
+        return null
     }
 
     // ------------------------------------------------------------------ mapping
@@ -459,7 +626,8 @@ class MovieBoxProvider(private val client: MovieBoxClient) : MediaProvider {
         private const val STREAM_REFERER = "https://sportslive.wine"
 
         private const val HOMEPAGE_PATH = "/wefeed-mobile-bff/tab-operating?page=1&tabId=2&version="
-        private const val SEARCH_PATH = "/wefeed-mobile-bff/subject-api/search/v2"
+        private const val SEARCH_PATH = "/wefeed-mobile-bff/subject-api/search"
+        private const val LEGACY_SEARCH_PATH = "/wefeed-mobile-bff/subject-api/search/v2"
         private const val SUBJECT_PATH = "/wefeed-mobile-bff/subject-api/get?subjectId="
         private const val SEASON_PATH = "/wefeed-mobile-bff/subject-api/season-info?subjectId="
         private const val PLAY_INFO_PATH = "/wefeed-mobile-bff/subject-api/play-info/v2?subjectId="
@@ -468,6 +636,23 @@ class MovieBoxProvider(private val client: MovieBoxClient) : MediaProvider {
             "/wefeed-mobile-bff/subject-api/resource-position/v2?subjectId="
         private const val CAPTIONS_PATH =
             "/wefeed-mobile-bff/subject-api/get-ext-captions?subjectId="
+        private const val STREAM_CAPTIONS_PATH =
+            "/wefeed-mobile-bff/subject-api/get-stream-captions?subjectId="
+
+        /** h5 player hosts, tried in order until one returns streams. */
+        private val WEB_DOMAINS = listOf(
+            "https://123moviesfree.club",
+            "https://movie-box.co",
+            "https://movieboxonline.net",
+            "https://sflix.film",
+            "https://h5-api.aoneroom.com",
+            "https://netnaija.film",
+            "https://movieboxhd.net",
+        )
+
+        private const val WEB_USER_AGENT =
+            "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36"
 
         fun isPlaceholderUrl(url: String): Boolean {
             val lower = url.lowercase()

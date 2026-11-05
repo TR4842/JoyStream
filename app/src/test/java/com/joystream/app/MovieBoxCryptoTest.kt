@@ -85,4 +85,44 @@ class MovieBoxCryptoTest {
         val octets = identity.spoofedIp.split('.')
         assertEquals(4, octets.size)
     }
+
+    @Test
+    fun `secret key is decoded twice from base64`() {
+        // The provider publishes keys as base64(base64(raw)); a single decode
+        // yields ASCII, so the wrong depth produces a 44-byte HMAC key.
+        assertEquals(30, MovieBoxCrypto.SECRET_BYTES.size)
+        assertEquals(
+            "efa891974eecd3148df63aa611602defd101259ba521022c57ae0566bd8e",
+            MovieBoxCrypto.SECRET_BYTES.joinToString("") { "%02x".format(it) },
+        )
+    }
+
+    @Test
+    fun `signature carries the timestamp and key version`() {
+        val signature = MovieBoxCrypto.generateSignature(
+            method = "GET",
+            accept = "application/json",
+            contentType = "application/json",
+            url = "https://api3.aoneroom.com/wefeed-mobile-bff/subject-api/get?subjectId=1",
+            body = null,
+            timestampMs = 1700000000000L,
+        )
+        val parts = signature.split('|')
+        assertEquals(3, parts.size)
+        assertEquals("1700000000000", parts[0])
+        assertEquals("2", parts[1])
+        assertEquals(24, parts[2].length)
+    }
+
+    @Test
+    fun `previous key produces a different signature`() {
+        val args = arrayOf("GET", "application/json", "application/json", "https://a.example.com/x", null)
+        val primary = MovieBoxCrypto.generateSignature(
+            args[0], args[1], args[2], args[3], args[4], 1700000000000L,
+        )
+        val previous = MovieBoxCrypto.generateSignature(
+            args[0], args[1], args[2], args[3], args[4], 1700000000000L, usePreviousKey = true,
+        )
+        assertTrue(primary != previous)
+    }
 }
