@@ -116,12 +116,22 @@ class MovieBoxCryptoTest {
 
     @Test
     fun `previous key produces a different signature`() {
-        val args = arrayOf("GET", "application/json", "application/json", "https://a.example.com/x", null)
         val primary = MovieBoxCrypto.generateSignature(
-            args[0], args[1], args[2], args[3], args[4], 1700000000000L,
+            method = "GET",
+            accept = "application/json",
+            contentType = "application/json",
+            url = "https://a.example.com/x?a=1",
+            body = null,
+            timestampMs = 1700000000000L,
         )
         val previous = MovieBoxCrypto.generateSignature(
-            args[0], args[1], args[2], args[3], args[4], 1700000000000L, usePreviousKey = true,
+            method = "GET",
+            accept = "application/json",
+            contentType = "application/json",
+            url = "https://a.example.com/x?a=1",
+            body = null,
+            timestampMs = 1700000000000L,
+            usePreviousKey = true,
         )
         assertTrue(primary != previous)
     }
